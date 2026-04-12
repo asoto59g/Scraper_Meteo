@@ -44,6 +44,9 @@ jobs:
           MAX_ATTACH_MB: "20"
         run: python cleanup_history.py
 
+      - name: Deduplicar históricos por programado_slot
+        run: python dedupe_history.py
+
       - name: Commit y push si hay cambios
         run: |
           git config user.name "github-actions[bot]"
