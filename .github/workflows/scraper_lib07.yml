@@ -2,7 +2,7 @@ name: Scrape LIB07 cada 15 min
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:
