@@ -4,6 +4,7 @@ import re
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional, Union
 
 import pandas as pd
 
@@ -15,7 +16,7 @@ HIST_DIR = os.path.join(OUT_DIR, "historico")
 def norm(s: str) -> str:
     s = (s or "").strip().lower()
     s = unicodedata.normalize("NFD", s)
-    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")  # quita tildes
     s = re.sub(r"[^a-z0-9]+", "", s)
     return s
 
@@ -41,6 +42,7 @@ def parse_num_latam(v):
     if not s:
         return None
 
+    # Formato LATAM web: 1.001,12
     if "." in s and "," in s:
         s = s.replace(".", "").replace(",", ".")
     elif "," in s:
@@ -62,6 +64,7 @@ def clean_numeric_columns(df: pd.DataFrame, non_numeric=("fecha",)):
 
 
 def format_latam_number(x, dec=2):
+    """1001.12 -> 1.001,12"""
     if pd.isna(x):
         return ""
     s = f"{float(x):,.{dec}f}"  # 1,001.12
@@ -80,9 +83,9 @@ def to_latam_text_df(df: pd.DataFrame, non_numeric=("fecha",), dec=2):
 
 def append_latam_csv(df: pd.DataFrame, path: str, non_numeric=("fecha",), dec=2):
     """
-    Append robusto:
+    Append robusto en CSV histórico:
     - Si no existe: crea.
-    - Si existe pero el esquema cambió: hace backup y reinicia.
+    - Si existe con esquema distinto: backup + reinicio limpio.
     """
     out = to_latam_text_df(df, non_numeric=non_numeric, dec=dec)
     p = Path(path)
@@ -91,7 +94,7 @@ def append_latam_csv(df: pd.DataFrame, path: str, non_numeric=("fecha",), dec=2)
         out.to_csv(path, mode="w", header=True, index=False, sep=";", encoding="utf-8-sig")
         return
 
-    # Validar esquema del existente
+    # Comparar esquema
     try:
         existing_cols = pd.read_csv(path, sep=";", nrows=0, encoding="utf-8-sig").columns.tolist()
     except Exception:
@@ -131,7 +134,19 @@ def detect_tables(tables, debug=False):
     return horarios, actuales_resumen, actuales_inst
 
 
-def export_outputs(debug=False):
+def _resolve_forced_slot(forced_slot: Optional[Union[str, datetime]]) -> datetime:
+    if forced_slot is None:
+        return floor_to_quarter(datetime.now(timezone.utc))
+
+    if isinstance(forced_slot, datetime):
+        return forced_slot.astimezone(timezone.utc).replace(second=0, microsecond=0)
+
+    # string esperado: "YYYY-MM-DD HH:MM:SS"
+    dt = datetime.strptime(str(forced_slot), "%Y-%m-%d %H:%M:%S")
+    return dt.replace(tzinfo=timezone.utc, second=0, microsecond=0)
+
+
+def export_outputs(debug=False, forced_slot: Optional[Union[str, datetime]] = None):
     os.makedirs(OUT_DIR, exist_ok=True)
     os.makedirs(HIST_DIR, exist_ok=True)
 
@@ -145,19 +160,22 @@ def export_outputs(debug=False):
 
     now_utc = datetime.now(timezone.utc)
     captura_utc_real = now_utc.strftime("%Y-%m-%d %H:%M:%S")
-    programado_slot = floor_to_quarter(now_utc).strftime("%Y-%m-%d %H:%M:%S")
+    slot_dt = _resolve_forced_slot(forced_slot)
+    programado_slot = slot_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-    # Último estado
+    # ---------- Estado actual ----------
     if horarios is not None and not horarios.empty:
         to_latam_text_df(horarios, non_numeric=("fecha",), dec=2).to_csv(
             os.path.join(OUT_DIR, "lib07_horarios.csv"),
             index=False, sep=";", encoding="utf-8-sig"
         )
+
     if actuales_resumen is not None and not actuales_resumen.empty:
         to_latam_text_df(actuales_resumen, non_numeric=("fecha",), dec=2).to_csv(
             os.path.join(OUT_DIR, "lib07_actuales_resumen.csv"),
             index=False, sep=";", encoding="utf-8-sig"
         )
+
     if actuales_inst is not None and not actuales_inst.empty:
         to_latam_text_df(actuales_inst, non_numeric=("fecha",), dec=2).to_csv(
             os.path.join(OUT_DIR, "lib07_actuales_instantanea.csv"),
@@ -166,13 +184,19 @@ def export_outputs(debug=False):
 
     with pd.ExcelWriter(os.path.join(OUT_DIR, "lib07_tablas.xlsx"), engine="openpyxl") as writer:
         if horarios is not None and not horarios.empty:
-            to_latam_text_df(horarios, non_numeric=("fecha",), dec=2).to_excel(writer, sheet_name="Horarios", index=False)
+            to_latam_text_df(horarios, non_numeric=("fecha",), dec=2).to_excel(
+                writer, sheet_name="Horarios", index=False
+            )
         if actuales_resumen is not None and not actuales_resumen.empty:
-            to_latam_text_df(actuales_resumen, non_numeric=("fecha",), dec=2).to_excel(writer, sheet_name="Actuales_resumen", index=False)
+            to_latam_text_df(actuales_resumen, non_numeric=("fecha",), dec=2).to_excel(
+                writer, sheet_name="Actuales_resumen", index=False
+            )
         if actuales_inst is not None and not actuales_inst.empty:
-            to_latam_text_df(actuales_inst, non_numeric=("fecha",), dec=2).to_excel(writer, sheet_name="Actuales_inst", index=False)
+            to_latam_text_df(actuales_inst, non_numeric=("fecha",), dec=2).to_excel(
+                writer, sheet_name="Actuales_inst", index=False
+            )
 
-    # Histórico acumulado
+    # ---------- Histórico acumulado (1 fila por corrida) ----------
     if horarios is not None and not horarios.empty:
         h1 = horarios.iloc[[0]].copy()
         h1.insert(0, "programado_slot", programado_slot)
@@ -206,7 +230,7 @@ def export_outputs(debug=False):
             dec=2
         )
 
-    print(f"[OK] Exportación completa. slot={programado_slot} real={captura_utc_real}")
+    print(f"[OK] Exportación completa | slot={programado_slot} | real={captura_utc_real}")
 
 
 if __name__ == "__main__":
