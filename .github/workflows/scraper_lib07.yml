@@ -1,0 +1,59 @@
+name: Scrape LIB07 cada 15 min
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lib07-scraper
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Ejecutar scraper LIB07
+        run: python export_lib07_csv.py
+
+      - name: Enviar correo y limpiar históricos (>30 días)
+        env:
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          EMAIL_TO: "oasotob@gmail.com"
+          DAYS_TO_KEEP: "30"
+          MAX_ATTACH_MB: "20"
+        run: python cleanup_history.py
+
+      - name: Commit y push si hay cambios
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add salida_csv || true
+
+          if git diff --cached --quiet; then
+            echo "No hay cambios para commitear."
+          else
+            git commit -m "LIB07 update $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            git push
+          fi
