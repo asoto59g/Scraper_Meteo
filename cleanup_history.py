@@ -21,16 +21,14 @@ SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465
 
 
-def parse_captura_utc(series):
-    # formato esperado: "YYYY-MM-DD HH:MM:SS"
+def parse_dt_utc(series):
+    # Usamos captura_utc_real para antigüedad real
     return pd.to_datetime(series, format="%Y-%m-%d %H:%M:%S", errors="coerce", utc=True)
 
 
 def collect_old_rows():
     """
-    Devuelve:
-    - results: lista con metadata por archivo
-    - total_old_rows: total filas viejas detectadas
+    Revisa *_historico.csv y separa filas viejas.
     """
     results = []
     total_old_rows = 0
@@ -40,29 +38,34 @@ def collect_old_rows():
         return results, total_old_rows
 
     for file in HIST_DIR.glob("*_historico.csv"):
+        # Intento lectura con BOM y fallback
         try:
             df = pd.read_csv(file, sep=";", dtype=str, encoding="utf-8-sig")
         except Exception:
-            # fallback por si ya no tiene BOM
             df = pd.read_csv(file, sep=";", dtype=str, encoding="utf-8")
 
-        if df.empty or "captura_utc" not in df.columns:
+        if df.empty:
             continue
 
-        ts = parse_captura_utc(df["captura_utc"])
+        if "captura_utc_real" not in df.columns:
+            # Compatibilidad vieja: si existía captura_utc
+            if "captura_utc" in df.columns:
+                ts = parse_dt_utc(df["captura_utc"])
+            else:
+                continue
+        else:
+            ts = parse_dt_utc(df["captura_utc_real"])
+
         old_mask = ts < cutoff
         old_count = int(old_mask.sum())
 
         if old_count > 0:
-            old_rows = df[old_mask].copy()
-            keep_rows = df[~old_mask].copy()
-
             results.append({
                 "file": file,
-                "df_old": old_rows,
-                "df_keep": keep_rows,
+                "df_old": df[old_mask].copy(),
+                "df_keep": df[~old_mask].copy(),
                 "old_count": old_count,
-                "total_count": len(df)
+                "total_count": len(df),
             })
             total_old_rows += old_count
 
@@ -71,14 +74,14 @@ def collect_old_rows():
 
 def build_zip_bytes(results):
     """
-    Crea ZIP en memoria con CSVs de filas a eliminar.
+    ZIP en memoria con filas a eliminar (por archivo).
     """
     mem = BytesIO()
     with zipfile.ZipFile(mem, "w", zipfile.ZIP_DEFLATED) as zf:
         for item in results:
-            name = item["file"].stem + "_rows_to_delete.csv"
+            out_name = item["file"].stem + "_rows_to_delete.csv"
             csv_bytes = item["df_old"].to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
-            zf.writestr(name, csv_bytes)
+            zf.writestr(out_name, csv_bytes)
     mem.seek(0)
     return mem.read()
 
@@ -92,16 +95,15 @@ def send_email(results, total_old_rows, attach_zip_bytes=None):
     msg["From"] = EMAIL_USER
     msg["To"] = EMAIL_TO
 
-    lines = []
+    detail = []
     for item in results:
-        lines.append(
-            f"- {item['file'].name}: eliminar {item['old_count']} / total {item['total_count']}"
-        )
+        detail.append(f"- {item['file'].name}: eliminar {item['old_count']} / total {item['total_count']}")
 
     body = (
         f"Se detectaron filas antiguas (> {DAYS_TO_KEEP} días) en históricos acumulados.\n\n"
-        f"Detalle por archivo:\n" + "\n".join(lines) + "\n\n"
-        f"Fecha UTC: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}\n"
+        "Detalle:\n"
+        + "\n".join(detail)
+        + f"\n\nFecha UTC: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}\n"
     )
     msg.set_content(body)
 
@@ -110,7 +112,7 @@ def send_email(results, total_old_rows, attach_zip_bytes=None):
             attach_zip_bytes,
             maintype="application",
             subtype="zip",
-            filename="lib07_rows_to_delete.zip"
+            filename="lib07_rows_to_delete.zip",
         )
 
     with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as smtp:
@@ -119,10 +121,11 @@ def send_email(results, total_old_rows, attach_zip_bytes=None):
 
 
 def apply_cleanup(results):
+    """
+    Sobrescribe cada histórico conservando solo filas recientes.
+    """
     for item in results:
-        out = item["df_keep"]
-        # sobrescribir con lo que se conserva
-        out.to_csv(item["file"], index=False, sep=";", encoding="utf-8-sig")
+        item["df_keep"].to_csv(item["file"], index=False, sep=";", encoding="utf-8-sig")
 
 
 def main():
@@ -135,21 +138,17 @@ def main():
     zip_bytes = build_zip_bytes(results)
     zip_mb = len(zip_bytes) / (1024 * 1024)
 
-    try:
-        if zip_mb <= MAX_ATTACH_MB:
-            send_email(results, total_old_rows, attach_zip_bytes=zip_bytes)
-            print(f"Correo enviado con adjunto ZIP ({zip_mb:.2f} MB).")
-        else:
-            send_email(results, total_old_rows, attach_zip_bytes=None)
-            print(f"Correo enviado sin adjunto (ZIP {zip_mb:.2f} MB > {MAX_ATTACH_MB} MB).")
+    # 1) enviar correo
+    if zip_mb <= MAX_ATTACH_MB:
+        send_email(results, total_old_rows, attach_zip_bytes=zip_bytes)
+        print(f"Correo enviado con adjunto ZIP ({zip_mb:.2f} MB).")
+    else:
+        send_email(results, total_old_rows, attach_zip_bytes=None)
+        print(f"Correo enviado sin ZIP (ZIP {zip_mb:.2f} MB > {MAX_ATTACH_MB} MB).")
 
-        # Solo limpiar si el correo fue exitoso
-        apply_cleanup(results)
-        print(f"Limpieza aplicada. Filas eliminadas: {total_old_rows}")
-
-    except Exception as e:
-        print(f"ERROR en limpieza (no se aplicaron cambios): {e}")
-        raise
+    # 2) limpiar solo si correo OK
+    apply_cleanup(results)
+    print(f"Limpieza aplicada. Filas eliminadas: {total_old_rows}")
 
 
 if __name__ == "__main__":
