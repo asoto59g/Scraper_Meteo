@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+env/
+
+# Sensibles
+.env
+*.env
+secrets.json
+credentials.json
+
+# Sistema
+.DS_Store
+Thumbs.db
