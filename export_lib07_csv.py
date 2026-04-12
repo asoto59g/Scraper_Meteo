@@ -2,10 +2,14 @@
 import os
 import re
 import unicodedata
+from datetime import datetime, timezone
+from pathlib import Path
+
 import pandas as pd
 
 URL = "https://www.imn.ac.cr/especial/tablas/lib07.html"
 OUT_DIR = "salida_csv"
+HIST_DIR = os.path.join(OUT_DIR, "historico")
 
 
 def norm(s: str) -> str:
@@ -33,6 +37,7 @@ def parse_num_latam(v):
     if not s:
         return None
 
+    # Formato web: punto miles, coma decimal
     if "." in s and "," in s:
         s = s.replace(".", "").replace(",", ".")
     elif "," in s:
@@ -54,9 +59,10 @@ def clean_numeric_columns(df: pd.DataFrame, non_numeric=("fecha",)):
 
 
 def format_latam_number(x, dec=2):
+    """1001.12 -> 1.001,12"""
     if pd.isna(x):
         return ""
-    s = f"{float(x):,.{dec}f}"  # 1,001.12
+    s = f"{float(x):,.{dec}f}"   # 1,001.12
     s = s.replace(",", "X").replace(".", ",").replace("X", ".")
     return s
 
@@ -68,6 +74,20 @@ def to_latam_text_df(df: pd.DataFrame, non_numeric=("fecha",), dec=2):
             continue
         out[col] = out[col].apply(lambda v: format_latam_number(v, dec=dec))
     return out
+
+
+def append_latam_csv(df: pd.DataFrame, path: str, non_numeric=("fecha",), dec=2):
+    """
+    Agrega filas a un histórico acumulado.
+    - Si no existe: crea con header + BOM (utf-8-sig)
+    - Si existe: append sin header (utf-8)
+    """
+    out = to_latam_text_df(df, non_numeric=non_numeric, dec=dec)
+    p = Path(path)
+    if not p.exists():
+        out.to_csv(path, mode="w", header=True, index=False, sep=";", encoding="utf-8-sig")
+    else:
+        out.to_csv(path, mode="a", header=False, index=False, sep=";", encoding="utf-8")
 
 
 def detect_tables(tables, debug=False):
@@ -95,6 +115,7 @@ def detect_tables(tables, debug=False):
 
 def export_outputs(debug=False):
     os.makedirs(OUT_DIR, exist_ok=True)
+    os.makedirs(HIST_DIR, exist_ok=True)
 
     tables = pd.read_html(URL, flavor="lxml", decimal=",", thousands=".")
     if not tables:
@@ -105,28 +126,30 @@ def export_outputs(debug=False):
     if horarios is None and actuales_resumen is None and actuales_inst is None:
         raise ValueError("No se detectaron tablas objetivo.")
 
-    # CSV con separador ';' y números formato LATAM
+    # Timestamp de captura
+    captura_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    # ---------- 1) Archivos "último estado" ----------
     if horarios is not None and not horarios.empty:
         to_latam_text_df(horarios, non_numeric=("fecha",), dec=2).to_csv(
             os.path.join(OUT_DIR, "lib07_horarios.csv"),
-            index=False, encoding="utf-8-sig", sep=";"
+            index=False, sep=";", encoding="utf-8-sig"
         )
 
     if actuales_resumen is not None and not actuales_resumen.empty:
         to_latam_text_df(actuales_resumen, non_numeric=("fecha",), dec=2).to_csv(
             os.path.join(OUT_DIR, "lib07_actuales_resumen.csv"),
-            index=False, encoding="utf-8-sig", sep=";"
+            index=False, sep=";", encoding="utf-8-sig"
         )
 
     if actuales_inst is not None and not actuales_inst.empty:
         to_latam_text_df(actuales_inst, non_numeric=("fecha",), dec=2).to_csv(
             os.path.join(OUT_DIR, "lib07_actuales_instantanea.csv"),
-            index=False, encoding="utf-8-sig", sep=";"
+            index=False, sep=";", encoding="utf-8-sig"
         )
 
-    # Excel con 3 hojas
-    xlsx_path = os.path.join(OUT_DIR, "lib07_tablas.xlsx")
-    with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
+    # Excel último estado
+    with pd.ExcelWriter(os.path.join(OUT_DIR, "lib07_tablas.xlsx"), engine="openpyxl") as writer:
         if horarios is not None and not horarios.empty:
             to_latam_text_df(horarios, non_numeric=("fecha",), dec=2).to_excel(
                 writer, sheet_name="Horarios", index=False
@@ -140,7 +163,38 @@ def export_outputs(debug=False):
                 writer, sheet_name="Actuales_inst", index=False
             )
 
-    print(f"[OK] Exportado en carpeta: {OUT_DIR}")
+    # ---------- 2) Histórico acumulado (append de 1 fila por corrida) ----------
+    if horarios is not None and not horarios.empty:
+        h1 = horarios.iloc[[0]].copy()
+        h1.insert(0, "captura_utc", captura_utc)
+        append_latam_csv(
+            h1,
+            os.path.join(HIST_DIR, "lib07_horarios_historico.csv"),
+            non_numeric=("captura_utc", "fecha"),
+            dec=2
+        )
+
+    if actuales_resumen is not None and not actuales_resumen.empty:
+        ar1 = actuales_resumen.iloc[[0]].copy()
+        ar1.insert(0, "captura_utc", captura_utc)
+        append_latam_csv(
+            ar1,
+            os.path.join(HIST_DIR, "lib07_actuales_resumen_historico.csv"),
+            non_numeric=("captura_utc", "fecha"),
+            dec=2
+        )
+
+    if actuales_inst is not None and not actuales_inst.empty:
+        ai1 = actuales_inst.iloc[[0]].copy()
+        ai1.insert(0, "captura_utc", captura_utc)
+        append_latam_csv(
+            ai1,
+            os.path.join(HIST_DIR, "lib07_actuales_instantanea_historico.csv"),
+            non_numeric=("captura_utc", "fecha"),
+            dec=2
+        )
+
+    print(f"[OK] Exportación completa. Captura UTC: {captura_utc}")
 
 
 if __name__ == "__main__":
