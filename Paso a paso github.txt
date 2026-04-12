@@ -1,0 +1,66 @@
+1) Subir archivos al repo
+Asegurate de tener estos archivos:
+
+export_lib07_csv.py
+cleanup_history.py
+requirements.txt
+.github/workflows/scrape_lib07.yml
+Estructura:
+
+tu-repo/
+  export_lib07_csv.py
+  cleanup_history.py
+  requirements.txt
+  .github/
+    workflows/
+      scrape_lib07.yml
+2) Habilitar permisos de escritura del workflow
+En tu repo de GitHub:
+
+Settings
+Actions → General
+En “Workflow permissions”, seleccioná: ✅ Read and write permissions
+Guardá.
+Esto es necesario para que el workflow pueda hacer git push.
+
+3) Crear Secrets (correo)
+En el repo:
+
+Settings
+Secrets and variables → Actions
+New repository secret y agregá:
+EMAIL_USER → tu Gmail remitente
+EMAIL_APP_PASSWORD → contraseña de aplicación de Gmail (16 caracteres)
+Gmail: necesitás 2FA activo para generar App Password.
+
+4) Confirmar workflow YAML
+Archivo: .github/workflows/scrape_lib07.yml
+Debe tener:
+
+trigger por cron */15 * * * *
+workflow_dispatch para correr manual
+permissions: contents: write
+5) Primer commit/push
+Desde tu máquina:
+
+git add .
+git commit -m "Config GitHub Actions LIB07"
+git push
+6) Probar ejecución manual
+En GitHub:
+
+pestaña Actions
+elegí workflow “Scrape LIB07 cada 15 min”
+Run workflow
+Revisá logs de cada step.
+7) Verificar resultados
+Si todo sale bien:
+
+se crean/actualizan archivos en salida_csv/
+se ejecuta limpieza histórica
+se hace commit automático si hubo cambios
+8) Troubleshooting rápido
+No push: revisar permiso “Read and write”.
+Error correo: revisar EMAIL_USER / EMAIL_APP_PASSWORD.
+No corre cron: esperar unos minutos (GitHub cron no es exacto al segundo).
+Import error: verificar nombres de archivos exactos.
