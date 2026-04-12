@@ -1,4 +1,4 @@
-name: Scrape LIB07 cada 15 min
+name: Scrape LIB07 mitigado (runner cada 5 min, slots 15 min)
 
 on:
   schedule:
@@ -32,8 +32,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Ejecutar scraper LIB07
-        run: python export_lib07_csv.py
+      - name: Captura mitigada por slot (15 min)
+        run: python run_guarded_capture.py
 
       - name: Enviar correo y limpiar históricos (>30 días)
         env:
@@ -44,15 +44,21 @@ jobs:
           MAX_ATTACH_MB: "20"
         run: python cleanup_history.py
 
-    
+      # Recomendado: NO deduplicar cada 5 min para no borrar slots válidos.
+      # Si querés dedupe, hacerlo en otro workflow diario.
+      # - name: Deduplicar históricos por programado_slot+fecha
+      #   run: python dedupe_history.py
+
       - name: Commit y push si hay cambios
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
           git add salida_csv || true
+
           if git diff --cached --quiet; then
             echo "No hay cambios para commitear."
           else
-            git commit -m "LIB07 update $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            git commit -m "LIB07 mitigated update $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
             git push
           fi
