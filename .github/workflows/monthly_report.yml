@@ -1,0 +1,42 @@
+name: Reporte mensual LIB07
+
+on:
+  schedule:
+    - cron: "0 8 1 * *"   # 1° de cada mes a las 08:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 1
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5.4.0
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Enviar reporte mensual por correo
+        env:
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          EMAIL_TO: ${{ vars.EMAIL_TO }}
+          MAX_ATTACH_MB: "20"
+        run: python cleanup_history.py
