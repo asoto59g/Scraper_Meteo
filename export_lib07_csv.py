@@ -3,14 +3,19 @@ import os
 import re
 import unicodedata
 from datetime import datetime, timezone
+from io import StringIO
 from pathlib import Path
 from typing import Optional, Union
 
 import pandas as pd
+import requests
 
 URL = "https://www.imn.ac.cr/especial/tablas/lib07.html"
 OUT_DIR = "salida_csv"
 HIST_DIR = os.path.join(OUT_DIR, "historico")
+
+# Timeout de red: evita bloquear el runner indefinidamente si el IMN está lento
+REQUEST_TIMEOUT = 30  # segundos
 
 
 def norm(s: str) -> str:
@@ -131,6 +136,13 @@ def detect_tables(tables, debug=False):
         elif {"fecha", "temp", "td", "hr", "velocidad", "direccion", "vpmax", "stavg"}.issubset(cols):
             actuales_inst = clean_numeric_columns(dfn, non_numeric=("fecha",))
 
+    # Si no se detectó ninguna tabla conocida, loguear columnas para diagnóstico
+    if horarios is None and actuales_resumen is None and actuales_inst is None:
+        print("[WARN] No se detectaron tablas objetivo. Columnas encontradas:")
+        for i, df in enumerate(tables, 1):
+            dfn = normalize_columns(df)
+            print(f"  Tabla {i}: {list(dfn.columns)}")
+
     return horarios, actuales_resumen, actuales_inst
 
 
@@ -150,7 +162,11 @@ def export_outputs(debug=False, forced_slot: Optional[Union[str, datetime]] = No
     os.makedirs(OUT_DIR, exist_ok=True)
     os.makedirs(HIST_DIR, exist_ok=True)
 
-    tables = pd.read_html(URL, flavor="lxml", decimal=",", thousands=".")
+    # Fetch con timeout explícito para no bloquear el runner
+    resp = requests.get(URL, timeout=REQUEST_TIMEOUT)
+    resp.raise_for_status()
+    tables = pd.read_html(StringIO(resp.text), flavor="lxml", decimal=",", thousands=".")
+
     if not tables:
         raise ValueError("No se encontraron tablas en la URL.")
 

@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 
 import pandas as pd
+from dedupe_history import main as dedupe_main
 
 HIST_DIR = Path("salida_csv/historico")
 DAYS_TO_KEEP = int(os.getenv("DAYS_TO_KEEP", "30"))
@@ -15,7 +16,8 @@ MAX_ATTACH_MB = int(os.getenv("MAX_ATTACH_MB", "20"))
 
 EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")
-EMAIL_TO = os.getenv("EMAIL_TO", "oasotob@gmail.com")
+# EMAIL_TO es obligatorio: no usar fallback hardcodeado para evitar envíos a destinatarios inesperados
+EMAIL_TO = os.getenv("EMAIL_TO")
 
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465
@@ -89,6 +91,8 @@ def build_zip_bytes(results):
 def send_email(results, total_old_rows, attach_zip_bytes=None):
     if not EMAIL_USER or not EMAIL_APP_PASSWORD:
         raise RuntimeError("Faltan EMAIL_USER o EMAIL_APP_PASSWORD en variables de entorno.")
+    if not EMAIL_TO:
+        raise RuntimeError("Falta variable de entorno EMAIL_TO.")
 
     msg = EmailMessage()
     msg["Subject"] = f"LIB07 limpieza histórico: {total_old_rows} filas antiguas"
@@ -125,6 +129,10 @@ def apply_cleanup(results):
 
 
 def main():
+    # Deduplicar antes de limpiar para no procesar duplicados como filas distintas
+    print("[INFO] Deduplicando históricos antes de limpiar...")
+    dedupe_main()
+
     results, total_old_rows = collect_old_rows()
 
     if total_old_rows == 0:
@@ -133,17 +141,17 @@ def main():
 
     zip_bytes = build_zip_bytes(results)
     zip_mb = len(zip_bytes) / (1024 * 1024)
+    attach = zip_bytes if zip_mb <= MAX_ATTACH_MB else None
 
-    if zip_mb <= MAX_ATTACH_MB:
-        send_email(results, total_old_rows, attach_zip_bytes=zip_bytes)
-        print(f"Correo enviado con ZIP ({zip_mb:.2f} MB).")
-    else:
-        send_email(results, total_old_rows, attach_zip_bytes=None)
-        print(f"Correo enviado sin ZIP (ZIP {zip_mb:.2f} MB > {MAX_ATTACH_MB} MB).")
-
-    # solo limpia si correo fue OK
-    apply_cleanup(results)
-    print(f"Limpieza aplicada. Filas eliminadas: {total_old_rows}")
+    try:
+        send_email(results, total_old_rows, attach_zip_bytes=attach)
+        print(f"Correo enviado ({'con' if attach else 'sin'} ZIP, {zip_mb:.2f} MB).")
+        # Solo limpia si el correo fue enviado correctamente
+        apply_cleanup(results)
+        print(f"Limpieza aplicada. Filas eliminadas: {total_old_rows}")
+    except Exception as e:
+        print(f"[ERROR] Fallo en envío de correo o limpieza: {e}")
+        raise   # propaga para que el step de Actions falle visiblemente
 
 
 if __name__ == "__main__":

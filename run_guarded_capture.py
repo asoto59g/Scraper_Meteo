@@ -5,39 +5,58 @@ import pandas as pd
 
 from export_lib07_csv import export_outputs
 
-HIST_FILE = Path("salida_csv/historico/lib07_actuales_instantanea_historico.csv")
-MAX_BACKFILL_MIN = 40  # recupera slots perdidos hasta 40 min atrás
+# Archivos históricos candidatos para determinar slots ya capturados.
+# Se usa el primero que exista para evitar re-capturas cuando una tabla
+# concreta no aparece en la fuente web en un slot dado.
+HIST_FILES = [
+    Path("salida_csv/historico/lib07_horarios_historico.csv"),
+    Path("salida_csv/historico/lib07_actuales_resumen_historico.csv"),
+    Path("salida_csv/historico/lib07_actuales_instantanea_historico.csv"),
+]
+
+# Cuántos slots de 15 min hacia atrás se revisan para backfill
+MAX_BACKFILL_SLOTS = 3         # 3 slots × 15 min = 45 min hacia atrás
+MAX_BACKFILL_MIN = MAX_BACKFILL_SLOTS * 15  # debe coincidir con los candidatos
 
 
 def floor_to_quarter(dt: datetime) -> datetime:
     return dt.replace(minute=(dt.minute // 15) * 15, second=0, microsecond=0)
 
 
-def load_captured_slots():
-    if not HIST_FILE.exists():
-        return set()
-    try:
-        df = pd.read_csv(HIST_FILE, sep=";", dtype=str, encoding="utf-8-sig", engine="python", on_bad_lines="skip")
-    except Exception:
-        df = pd.read_csv(HIST_FILE, sep=";", dtype=str, encoding="utf-8", engine="python", on_bad_lines="skip")
+def load_captured_slots() -> set:
+    """Lee el primer archivo histórico disponible y retorna el set de slots ya capturados."""
+    for hist_file in HIST_FILES:
+        if not hist_file.exists():
+            continue
+        try:
+            df = pd.read_csv(
+                hist_file, sep=";", dtype=str,
+                encoding="utf-8-sig", engine="python", on_bad_lines="skip"
+            )
+        except Exception:
+            df = pd.read_csv(
+                hist_file, sep=";", dtype=str,
+                encoding="utf-8", engine="python", on_bad_lines="skip"
+            )
 
-    if "programado_slot" not in df.columns:
-        return set()
+        if "programado_slot" not in df.columns:
+            continue
 
-    return set(df["programado_slot"].dropna().astype(str).str.strip().tolist())
+        return set(df["programado_slot"].dropna().astype(str).str.strip().tolist())
+
+    return set()
 
 
 def choose_slot_to_capture(now_utc: datetime, captured_slots: set):
     current_slot = floor_to_quarter(now_utc)
 
-    # candidatos: slot actual y 2 anteriores (30 min)
+    # Candidatos: slot actual y los MAX_BACKFILL_SLOTS anteriores (más viejo primero)
     candidates = [
-        current_slot - timedelta(minutes=30),
-        current_slot - timedelta(minutes=15),
-        current_slot,
+        current_slot - timedelta(minutes=15 * i)
+        for i in range(MAX_BACKFILL_SLOTS, -1, -1)
     ]
 
-    # prioriza el más viejo faltante (backfill primero)
+    # Prioriza el más viejo faltante (backfill primero)
     for slot in candidates:
         age_min = (now_utc - slot).total_seconds() / 60
         if age_min < 0:
