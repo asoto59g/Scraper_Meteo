@@ -1,6 +1,6 @@
 # LIB07 Scraper (IMN) — CSV/XLSX + GitHub Actions cada 15 min
 
-Extrae tablas climáticas de la estación LIB07 del IMN:
+Extrae tablas climáticas de la estación LIB07 del IMN. Liberia, Guanacaste, Costa Rica:
 
 `https://www.imn.ac.cr/especial/tablas/lib07.html`
 
