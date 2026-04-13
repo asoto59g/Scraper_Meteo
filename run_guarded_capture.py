@@ -14,8 +14,10 @@ HIST_FILES = [
     Path("salida_csv/historico/lib07_actuales_instantanea_historico.csv"),
 ]
 
-# Cuántos slots de 15 min hacia atrás se revisan para backfill
-MAX_BACKFILL_SLOTS = 3         # 3 slots × 15 min = 45 min hacia atrás
+# Cuántos slots de 15 min hacia atrás se revisan para backfill.
+# GitHub Actions free tier puede retrasar el cron hasta 90 min.
+# Con 8 slots cubrimos hasta 120 min hacia atrás para no perder registros.
+MAX_BACKFILL_SLOTS = 8         # 8 slots × 15 min = 120 min hacia atrás
 MAX_BACKFILL_MIN = MAX_BACKFILL_SLOTS * 15  # debe coincidir con los candidatos
 
 
