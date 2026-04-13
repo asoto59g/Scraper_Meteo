@@ -26,11 +26,13 @@ def dedupe_file(path: Path) -> int:
     df["_slot_dt"] = pd.to_datetime(df["programado_slot"], errors="coerce", utc=True)
     df["_real_dt"] = pd.to_datetime(df["captura_utc_real"], errors="coerce", utc=True)
 
-    # estricto: por slot + fecha (si existe)
-    subset_keys = ["programado_slot", "fecha"] if "fecha" in df.columns else ["programado_slot"]
+    # Deduplicamos por 'fecha' únicamente: la misma hora del IMN no debe repetirse
+    # aunque haya sido capturada en múltiples corridas del scraper.
+    # programado_slot puede variar entre corridas que ven el mismo registro.
+    subset_keys = ["fecha"] if "fecha" in df.columns else ["programado_slot"]
 
     df = df.sort_values(by=["_slot_dt", "_real_dt"], ascending=[True, True])
-    df = df.drop_duplicates(subset=subset_keys, keep="last")
+    df = df.drop_duplicates(subset=subset_keys, keep="last")  # keep='last' = captura más reciente
     df = df.sort_values(by=["_slot_dt"], ascending=True)
     df = df.drop(columns=["_slot_dt", "_real_dt"])
 

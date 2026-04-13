@@ -212,35 +212,37 @@ def export_outputs(debug=False, forced_slot: Optional[Union[str, datetime]] = No
                 writer, sheet_name="Actuales_inst", index=False
             )
 
-    # ---------- Histórico acumulado (1 fila por corrida) ----------
+    # ---------- Histórico acumulado (TODAS las filas disponibles por corrida) ----------
+    # Guardamos todos los registros de la página (no solo el primero).
+    # dedupe_history.py desduplicará por 'fecha' para evitar repetidos entre corridas.
     if horarios is not None and not horarios.empty:
-        h1 = horarios.iloc[[0]].copy()
-        h1.insert(0, "programado_slot", programado_slot)
-        h1.insert(1, "captura_utc_real", captura_utc_real)
+        h_all = horarios.copy()
+        h_all.insert(0, "programado_slot", programado_slot)
+        h_all.insert(1, "captura_utc_real", captura_utc_real)
         append_latam_csv(
-            h1,
+            h_all,
             os.path.join(HIST_DIR, "lib07_horarios_historico.csv"),
             non_numeric=("programado_slot", "captura_utc_real", "fecha"),
             dec=2
         )
 
     if actuales_resumen is not None and not actuales_resumen.empty:
-        ar1 = actuales_resumen.iloc[[0]].copy()
-        ar1.insert(0, "programado_slot", programado_slot)
-        ar1.insert(1, "captura_utc_real", captura_utc_real)
+        ar_all = actuales_resumen.copy()
+        ar_all.insert(0, "programado_slot", programado_slot)
+        ar_all.insert(1, "captura_utc_real", captura_utc_real)
         append_latam_csv(
-            ar1,
+            ar_all,
             os.path.join(HIST_DIR, "lib07_actuales_resumen_historico.csv"),
             non_numeric=("programado_slot", "captura_utc_real", "fecha"),
             dec=2
         )
 
     if actuales_inst is not None and not actuales_inst.empty:
-        ai1 = actuales_inst.iloc[[0]].copy()
-        ai1.insert(0, "programado_slot", programado_slot)
-        ai1.insert(1, "captura_utc_real", captura_utc_real)
+        ai_all = actuales_inst.copy()
+        ai_all.insert(0, "programado_slot", programado_slot)
+        ai_all.insert(1, "captura_utc_real", captura_utc_real)
         append_latam_csv(
-            ai1,
+            ai_all,
             os.path.join(HIST_DIR, "lib07_actuales_instantanea_historico.csv"),
             non_numeric=("programado_slot", "captura_utc_real", "fecha"),
             dec=2
