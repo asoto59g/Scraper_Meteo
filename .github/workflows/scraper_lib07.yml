@@ -9,35 +9,42 @@ permissions:
   contents: write
 
 concurrency:
-  group: lib07-scraper
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
     timeout-minutes: 12
+    env:
+      PYTHONUNBUFFERED: "1"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: true
+          ref: ${{ github.ref }}
 
       - name: Configurar Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
+          cache-dependency-path: requirements.txt
 
       - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install -r requirements.txt
 
       - name: Captura mitigada por slot (15 min)
+        id: captura
         run: python run_guarded_capture.py
 
       - name: Enviar correo y limpiar históricos (>30 días)
+        if: always()
         env:
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
@@ -47,14 +54,22 @@ jobs:
         run: python cleanup_history.py
 
       - name: Commit y push si hay cambios (con reintentos)
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE" || true
 
-          git add salida_csv || true
+          # Stage de cambios (incluye borrados)
+          # Si solo quieres commitear salida_csv:
+          if [ -d salida_csv ]; then
+            git add -A salida_csv
+          fi
+          # O, si deseas incluir cualquier cambio de cleanup_history.py:
+          git add -A .
 
           if git diff --cached --quiet; then
             echo "No hay cambios para commitear."
@@ -68,7 +83,20 @@ jobs:
 
           for i in $(seq 1 $MAX_RETRIES); do
             echo "Intento $i/$MAX_RETRIES: pull --rebase + push"
-            git pull --rebase origin "$BRANCH"
+
+            # Rebase con autostash por seguridad
+            if ! git pull --rebase --autostash origin "$BRANCH"; then
+              echo "git pull --rebase falló."
+              if [ "$i" -lt "$MAX_RETRIES" ]; then
+                SLEEP=$((i * 5))
+                echo "Reintentando en ${SLEEP}s..."
+                sleep "$SLEEP"
+                continue
+              else
+                echo "Error: pull --rebase falló tras ${MAX_RETRIES} intentos."
+                exit 1
+              fi
+            fi
 
             if git push origin "HEAD:${BRANCH}"; then
               echo "Push exitoso."
