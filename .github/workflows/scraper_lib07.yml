@@ -46,8 +46,11 @@ jobs:
           MAX_ATTACH_MB: "20"
         run: python cleanup_history.py
 
-      - name: Commit y push si hay cambios
+      - name: Commit y push si hay cambios (con reintentos)
+        shell: bash
         run: |
+          set -euo pipefail
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
@@ -59,5 +62,25 @@ jobs:
           fi
 
           git commit -m "LIB07 mitigated update $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-          git pull --rebase origin "${GITHUB_REF_NAME}"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+          BRANCH="${GITHUB_REF_NAME}"
+          MAX_RETRIES=3
+
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "Intento $i/$MAX_RETRIES: pull --rebase + push"
+            git pull --rebase origin "$BRANCH"
+
+            if git push origin "HEAD:${BRANCH}"; then
+              echo "Push exitoso."
+              exit 0
+            fi
+
+            if [ "$i" -lt "$MAX_RETRIES" ]; then
+              SLEEP=$((i * 5))
+              echo "Push falló. Reintentando en ${SLEEP}s..."
+              sleep "$SLEEP"
+            fi
+          done
+
+          echo "Error: no se pudo hacer push tras ${MAX_RETRIES} intentos."
+          exit 1
