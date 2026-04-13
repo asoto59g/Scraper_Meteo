@@ -10,11 +10,12 @@ permissions:
 
 concurrency:
   group: lib07-scraper
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
 
     steps:
       - name: Checkout
@@ -26,6 +27,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
       - name: Instalar dependencias
         run: |
@@ -39,15 +41,10 @@ jobs:
         env:
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
-          EMAIL_TO: "oasotob@gmail.com"
+          EMAIL_TO: ${{ vars.EMAIL_TO }}
           DAYS_TO_KEEP: "30"
           MAX_ATTACH_MB: "20"
         run: python cleanup_history.py
-
-      # Recomendado: NO deduplicar cada 5 min para no borrar slots válidos.
-      # Si querés dedupe, hacerlo en otro workflow diario.
-      # - name: Deduplicar históricos por programado_slot+fecha
-      #   run: python dedupe_history.py
 
       - name: Commit y push si hay cambios
         run: |
@@ -58,7 +55,9 @@ jobs:
 
           if git diff --cached --quiet; then
             echo "No hay cambios para commitear."
-          else
-            git commit -m "LIB07 mitigated update $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-            git push
+            exit 0
           fi
+
+          git commit -m "LIB07 mitigated update $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
