@@ -10,12 +10,14 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # false: deja terminar el run anterior antes de iniciar uno nuevo.
+  # Evita cancelar un commit/push a mitad y dejar el CSV en estado inconsistente.
+  cancel-in-progress: false
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
     env:
       PYTHONUNBUFFERED: "1"
 
@@ -44,7 +46,9 @@ jobs:
         run: python run_guarded_capture.py
 
       - name: Enviar correo y limpiar históricos (>30 días)
-        if: always()
+        # Solo se ejecuta si la captura fue exitosa para evitar correos de
+        # limpieza cuando el scraper falló (URL caída, error de red, etc.)
+        if: steps.captura.outcome == 'success'
         env:
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
@@ -63,13 +67,11 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config --global --add safe.directory "$GITHUB_WORKSPACE" || true
 
-          # Stage de cambios (incluye borrados)
-          # Si solo quieres commitear salida_csv:
+          # Solo agregar el directorio de salida; evita commitear cache de pip,
+          # backups temporales u otros archivos no deseados del workspace.
           if [ -d salida_csv ]; then
-            git add -A salida_csv
+            git add -A salida_csv/
           fi
-          # O, si deseas incluir cualquier cambio de cleanup_history.py:
-          git add -A .
 
           if git diff --cached --quiet; then
             echo "No hay cambios para commitear."
