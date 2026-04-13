@@ -1,4 +1,4 @@
-name: Scrape LIB07 mitigado (runner cada 5 min, slots 15 min)
+name: Scrape LIB07 (captura cada 5 min, histórico por fecha)
 
 on:
   schedule:
@@ -11,7 +11,7 @@ permissions:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   # false: deja terminar el run anterior antes de iniciar uno nuevo.
-  # Evita cancelar un commit/push a mitad y dejar el CSV en estado inconsistente.
+  # Evita un push a mitad y dejar el CSV en estado inconsistente.
   cancel-in-progress: false
 
 jobs:
@@ -20,17 +20,18 @@ jobs:
     timeout-minutes: 15
     env:
       PYTHONUNBUFFERED: "1"
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
         with:
           fetch-depth: 0
           persist-credentials: true
           ref: ${{ github.ref }}
 
       - name: Configurar Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5.4.0
         with:
           python-version: "3.11"
           cache: "pip"
@@ -41,21 +42,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Captura mitigada por slot (15 min)
-        id: captura
+      - name: Captura y merge al histórico
         run: python run_guarded_capture.py
-
-      - name: Enviar correo y limpiar históricos (>30 días)
-        # Solo se ejecuta si la captura fue exitosa para evitar correos de
-        # limpieza cuando el scraper falló (URL caída, error de red, etc.)
-        if: steps.captura.outcome == 'success'
-        env:
-          EMAIL_USER: ${{ secrets.EMAIL_USER }}
-          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
-          EMAIL_TO: ${{ vars.EMAIL_TO }}
-          DAYS_TO_KEEP: "30"
-          MAX_ATTACH_MB: "20"
-        run: python cleanup_history.py
 
       - name: Commit y push si hay cambios (con reintentos)
         if: github.event_name != 'pull_request'
@@ -67,8 +55,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config --global --add safe.directory "$GITHUB_WORKSPACE" || true
 
-          # Solo agregar el directorio de salida; evita commitear cache de pip,
-          # backups temporales u otros archivos no deseados del workspace.
+          # Solo agregar el directorio de salida
           if [ -d salida_csv ]; then
             git add -A salida_csv/
           fi
@@ -78,7 +65,7 @@ jobs:
             exit 0
           fi
 
-          git commit -m "LIB07 mitigated update $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          git commit -m "LIB07 update $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 
           BRANCH="${GITHUB_REF_NAME}"
           MAX_RETRIES=3
@@ -86,7 +73,6 @@ jobs:
           for i in $(seq 1 $MAX_RETRIES); do
             echo "Intento $i/$MAX_RETRIES: pull --rebase + push"
 
-            # Rebase con autostash por seguridad
             if ! git pull --rebase --autostash origin "$BRANCH"; then
               echo "git pull --rebase falló."
               if [ "$i" -lt "$MAX_RETRIES" ]; then
