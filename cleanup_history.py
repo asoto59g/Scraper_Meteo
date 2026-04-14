@@ -1,22 +1,23 @@
 # cleanup_history.py
+"""
+Reporte mensual LIB07 — envía un correo con estadísticas del histórico acumulado.
+NO elimina filas. Se ejecuta desde monthly_report.yml (trigger mensual).
+"""
 import os
 import smtplib
 import zipfile
 from io import BytesIO
 from pathlib import Path
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from email.message import EmailMessage
 
 import pandas as pd
-from dedupe_history import main as dedupe_main
 
 HIST_DIR = Path("salida_csv/historico")
-DAYS_TO_KEEP = int(os.getenv("DAYS_TO_KEEP", "30"))
 MAX_ATTACH_MB = int(os.getenv("MAX_ATTACH_MB", "20"))
 
 EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")
-# EMAIL_TO es obligatorio: no usar fallback hardcodeado para evitar envíos a destinatarios inesperados
 EMAIL_TO = os.getenv("EMAIL_TO")
 
 SMTP_HOST = "smtp.gmail.com"
@@ -24,98 +25,82 @@ SMTP_PORT = 465
 
 
 def read_csv_robust(file: Path) -> pd.DataFrame:
-    # tolerante a filas mal formadas
     try:
-        return pd.read_csv(
-            file, sep=";", dtype=str, encoding="utf-8-sig",
-            engine="python", on_bad_lines="skip"
-        )
+        return pd.read_csv(file, sep=";", dtype=str, encoding="utf-8-sig",
+                           engine="python", on_bad_lines="skip")
     except Exception:
-        return pd.read_csv(
-            file, sep=";", dtype=str, encoding="utf-8",
-            engine="python", on_bad_lines="skip"
-        )
+        return pd.read_csv(file, sep=";", dtype=str, encoding="utf-8",
+                           engine="python", on_bad_lines="skip")
 
 
-def parse_dt_utc(series):
-    return pd.to_datetime(series, format="%Y-%m-%d %H:%M:%S", errors="coerce", utc=True)
+def build_summary() -> tuple:
+    """Genera el texto resumen y el adjunto ZIP con el histórico completo."""
+    hist_file = HIST_DIR / "lib07_horarios_historico.csv"
 
+    if not hist_file.exists():
+        return "No existe el archivo histórico todavía.", None
 
-def collect_old_rows():
-    results = []
-    total_old_rows = 0
-    cutoff = datetime.now(timezone.utc) - timedelta(days=DAYS_TO_KEEP)
+    df = read_csv_robust(hist_file)
+    if df.empty:
+        return "El archivo histórico existe pero está vacío.", None
 
-    if not HIST_DIR.exists():
-        return results, total_old_rows
+    row_count = len(df)
+    col_count = len(df.columns)
 
-    for file in HIST_DIR.glob("*_historico.csv"):
-        df = read_csv_robust(file)
-        if df.empty:
-            continue
+    fecha_min = df["fecha"].dropna().iloc[0] if "fecha" in df.columns else "N/D"
+    fecha_max = df["fecha"].dropna().iloc[-1] if "fecha" in df.columns else "N/D"
+    captura_min = df["captura_utc"].dropna().iloc[0] if "captura_utc" in df.columns else "N/D"
+    captura_max = df["captura_utc"].dropna().iloc[-1] if "captura_utc" in df.columns else "N/D"
 
-        if "captura_utc_real" in df.columns:
-            ts = parse_dt_utc(df["captura_utc_real"])
-        elif "captura_utc" in df.columns:
-            ts = parse_dt_utc(df["captura_utc"])
-        else:
-            continue
+    summary_text = (
+        f"Reporte mensual LIB07 – Estación Liberia\n"
+        f"{'=' * 50}\n"
+        f"Registros acumulados : {row_count:,}\n"
+        f"Columnas             : {col_count}\n"
+        f"Fecha más antigua    : {fecha_min}\n"
+        f"Fecha más reciente   : {fecha_max}\n"
+        f"Primera captura UTC  : {captura_min}\n"
+        f"Última captura UTC   : {captura_max}\n"
+        f"\nGenerado: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+    )
 
-        old_mask = ts < cutoff
-        old_count = int(old_mask.sum())
-
-        if old_count > 0:
-            results.append({
-                "file": file,
-                "df_old": df[old_mask].copy(),
-                "df_keep": df[~old_mask].copy(),
-                "old_count": old_count,
-                "total_count": len(df),
-            })
-            total_old_rows += old_count
-
-    return results, total_old_rows
-
-
-def build_zip_bytes(results):
+    # Adjunto: CSV histórico completo comprimido en ZIP
+    csv_bytes = df.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
     mem = BytesIO()
     with zipfile.ZipFile(mem, "w", zipfile.ZIP_DEFLATED) as zf:
-        for item in results:
-            out_name = item["file"].stem + "_rows_to_delete.csv"
-            csv_bytes = item["df_old"].to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
-            zf.writestr(out_name, csv_bytes)
+        zf.writestr("lib07_horarios_historico.csv", csv_bytes)
     mem.seek(0)
-    return mem.read()
+    zip_bytes = mem.read()
+
+    zip_mb = len(zip_bytes) / (1024 * 1024)
+    attach = zip_bytes if zip_mb <= MAX_ATTACH_MB else None
+    if attach is None:
+        summary_text += (
+            f"\n[Adjunto omitido: {zip_mb:.1f} MB supera el límite de {MAX_ATTACH_MB} MB]\n"
+        )
+
+    return summary_text, attach
 
 
-def send_email(results, total_old_rows, attach_zip_bytes=None):
+def send_report_email(summary_text: str, attach_zip_bytes=None):
     if not EMAIL_USER or not EMAIL_APP_PASSWORD:
         raise RuntimeError("Faltan EMAIL_USER o EMAIL_APP_PASSWORD en variables de entorno.")
     if not EMAIL_TO:
         raise RuntimeError("Falta variable de entorno EMAIL_TO.")
 
+    now = datetime.now(timezone.utc)
     msg = EmailMessage()
-    msg["Subject"] = f"LIB07 limpieza histórico: {total_old_rows} filas antiguas"
+    msg["Subject"] = f"LIB07 Reporte mensual – {now.strftime('%B %Y')}"
     msg["From"] = EMAIL_USER
     msg["To"] = EMAIL_TO
-
-    detail = []
-    for item in results:
-        detail.append(f"- {item['file'].name}: eliminar {item['old_count']} / total {item['total_count']}")
-
-    body = (
-        f"Se detectaron filas antiguas (> {DAYS_TO_KEEP} días).\n\n"
-        "Detalle:\n" + "\n".join(detail) +
-        f"\n\nFecha UTC: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}\n"
-    )
-    msg.set_content(body)
+    msg.set_content(summary_text)
 
     if attach_zip_bytes:
         msg.add_attachment(
             attach_zip_bytes,
             maintype="application",
             subtype="zip",
-            filename="lib07_rows_to_delete.zip",
+            filename="lib07_horarios_historico.zip",
         )
 
     with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as smtp:
@@ -123,35 +108,17 @@ def send_email(results, total_old_rows, attach_zip_bytes=None):
         smtp.send_message(msg)
 
 
-def apply_cleanup(results):
-    for item in results:
-        item["df_keep"].to_csv(item["file"], index=False, sep=";", encoding="utf-8-sig")
-
-
 def main():
-    # Deduplicar antes de limpiar para no procesar duplicados como filas distintas
-    print("[INFO] Deduplicando históricos antes de limpiar...")
-    dedupe_main()
-
-    results, total_old_rows = collect_old_rows()
-
-    if total_old_rows == 0:
-        print("No hay filas antiguas para limpiar.")
-        return
-
-    zip_bytes = build_zip_bytes(results)
-    zip_mb = len(zip_bytes) / (1024 * 1024)
-    attach = zip_bytes if zip_mb <= MAX_ATTACH_MB else None
+    print("[INFO] Generando reporte mensual LIB07...")
+    summary_text, attach = build_summary()
+    print(summary_text)
 
     try:
-        send_email(results, total_old_rows, attach_zip_bytes=attach)
-        print(f"Correo enviado ({'con' if attach else 'sin'} ZIP, {zip_mb:.2f} MB).")
-        # Solo limpia si el correo fue enviado correctamente
-        apply_cleanup(results)
-        print(f"Limpieza aplicada. Filas eliminadas: {total_old_rows}")
+        send_report_email(summary_text, attach_zip_bytes=attach)
+        print(f"[OK] Correo enviado ({'con' if attach else 'sin'} adjunto ZIP).")
     except Exception as e:
-        print(f"[ERROR] Fallo en envío de correo o limpieza: {e}")
-        raise   # propaga para que el step de Actions falle visiblemente
+        print(f"[ERROR] Fallo al enviar correo: {e}")
+        raise
 
 
 if __name__ == "__main__":
